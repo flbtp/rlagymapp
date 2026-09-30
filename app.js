@@ -1,11 +1,11 @@
-// GYM_APP — front end v2
+// GYM_APP — front end v3
 // Référence fonctionnelle : PROJECT_SPEC.md. Tous les textes affichés sont en anglais.
 // Toute modification (démarrer, série, fin, saut) est d'abord appliquée localement,
 // mise en file d'attente, puis envoyée au Worker par POST /sync dès que possible.
 (function () {
   'use strict';
 
-  var APP_VERSION = 'v2';
+  var APP_VERSION = 'v3';
   var WORKER = ((window.GYM_CONFIG && window.GYM_CONFIG.workerUrl) || '').replace(/\/+$/, '');
   var REQUEST_TIMEOUT_MS = 10000;
   var RETRY_MS = 15000;
@@ -49,6 +49,8 @@
     dialog: null,
     slideCurrent: null, // séance courante du carrousel (v2)
     slideViewed: null,  // séance regardée par l'utilisateur { seq, base }
+    deleting: {},       // (v3) séances supprimées en attente d'envoi : { session_uid: seq }
+    ignorePop: 0,       // (v3) retours d'historique déclenchés par l'app elle-même
     expanded: null,    // exercice ouvert choisi par l'utilisateur
     active: null,      // série en cours de saisie ou de correction ("exercise_id:set_no")
     drafts: {},
@@ -61,7 +63,9 @@
     S.session = store.get(key('session'));
     S.after = store.get(key('after'));
     S.queue = store.get(key('queue')) || [];
+    S.deleting = store.get(key('deleting')) || {};
   }
+  function saveDeleting() { store.set(key('deleting'), S.deleting); }
   function saveQueue() { store.set(key('queue'), S.queue); }
   function saveSession() { if (S.session) store.set(key('session'), S.session); else store.del(key('session')); }
   function saveAfter() { if (S.after) store.set(key('after'), S.after); else store.del(key('after')); }
@@ -140,6 +144,7 @@
       S.home = data; S.net = 'ok'; S.homeError = null;
       store.set(key('home'), data);
       if (S.after && S.after.accepted) { S.after = null; saveAfter(); }
+      Object.keys(S.deleting).forEach(function (uid) { if (!hasOps(uid)) delete S.deleting[uid]; }); saveDeleting();
       if (S.session && S.session.finished && !hasOps(S.session.session_uid)) { S.session = null; saveSession(); }
       // Séance locale inconnue du Worker et sans envoi en attente : elle n'existe plus, on l'oublie.
       if (S.session && !S.session.finished && !hasOps(S.session.session_uid) &&
@@ -186,6 +191,7 @@
         } else if (S.after && op.session_uid === S.after.uid && (op.type === 'session_skip' || op.type === 'session_finish')) {
           S.after.accepted = true; needHome = true;
         }
+        if (op.type === 'session_delete') needHome = true;
       });
       saveAfter();
       S.flushing = false;
@@ -241,7 +247,7 @@
     var h = S.home; if (!h || !h.session || !h.plan) return;
     var uid = uuid(); var at = nowIso();
     S.session = buildSession(h.session, uid, h.plan.cycle, h.plan.version, at);
-    saveSession(); resetSessionUi(); S.view = 'session'; render(); window.scrollTo(0, 0);
+    saveSession(); resetSessionUi(); S.view = 'session'; enterSessionHistory(); render(); window.scrollTo(0, 0);
     enqueue({ type: 'session_start', session_uid: uid, cycle: h.plan.cycle, plan_version: h.plan.version, session_seq: h.session.session_seq, started_at: at });
   }
 
@@ -253,8 +259,40 @@
       saveSession();
     }
     if (!S.session) return;
-    resetSessionUi(); S.view = 'session'; render(); window.scrollTo(0, 0);
+    resetSessionUi(); S.view = 'session'; enterSessionHistory(); render(); window.scrollTo(0, 0);
   }
+
+  function deleteSession(uid, seq) {
+    if (!uid || !canDelete()) return;
+    S.dialog = {
+      msg: 'Delete session ' + seq + '? Its logged sets will be removed and it will be proposed again.', ok: 'Delete', cancel: 'Cancel',
+      run: function () {
+        // Séance jamais envoyée au Worker : on annule simplement ses envois en attente.
+        var neverSent = S.queue.some(function (op) { return op.session_uid === uid && (op.type === 'session_start' || op.type === 'session_skip'); });
+        S.queue = S.queue.filter(function (op) { return op.session_uid !== uid; });
+        if (!neverSent) { S.queue.push({ type: 'session_delete', session_uid: uid }); S.deleting[uid] = seq; }
+        saveQueue(); saveDeleting();
+        if (S.session && S.session.session_uid === uid) { S.session = null; saveSession(); }
+        if (S.after && S.after.uid === uid) { S.after = null; saveAfter(); }
+        S.slideViewed = null; S.timer = null;
+        leaveSession();
+        flush();
+      }
+    };
+    render();
+  }
+
+  // Bouton retour (v3) : une séance ouverte ajoute une entrée d'historique ; retour ramène à l'accueil.
+  function enterSessionHistory() { try { history.pushState({ gym: 'session' }, ''); } catch (e) { /* ignoré */ } }
+  function leaveSession() {
+    S.view = 'home'; S.timer = null; resetSessionUi(); render(); window.scrollTo(0, 0);
+    try { if (history.state && history.state.gym === 'session') { S.ignorePop++; history.back(); } } catch (e) { /* ignoré */ }
+  }
+  window.addEventListener('popstate', function () {
+    if (S.ignorePop > 0) { S.ignorePop--; return; }
+    if (S.dialog) { S.dialog = null; if (S.view === 'session') enterSessionHistory(); render(); return; }
+    if (S.view === 'session') { S.view = 'home'; S.timer = null; S.slideViewed = null; resetSessionUi(); render(); window.scrollTo(0, 0); if (S.code) fetchHome(false); }
+  });
 
   function resetSessionUi() { S.expanded = null; S.active = null; S.drafts = {}; S.timer = null; }
 
@@ -317,7 +355,8 @@
     delete S.drafts[k]; S.active = null;
     if (S.expanded === ex.exercise_id && exComplete(ex)) S.expanded = null;
     saveSession();
-    if (isNew && !sessionComplete()) startTimer(ex);
+    if (exComplete(ex)) S.timer = null; // v3 : pas de repos après la dernière série d'un exercice
+    else if (isNew) startTimer(ex);
     render();
     enqueue(setOp(ex, n, 'DONE', load, reps));
   }
@@ -353,7 +392,7 @@
       var s = S.session;
       s.finished = true; saveSession();
       S.after = { kind: 'finished', uid: s.session_uid, seq: s.session_seq, accepted: false }; saveAfter();
-      S.timer = null; S.view = 'home'; resetSessionUi(); render(); window.scrollTo(0, 0);
+      S.slideViewed = null; leaveSession();
       enqueue({ type: 'session_finish', session_uid: s.session_uid, finished_at: nowIso() });
     };
     if (sessionComplete()) { run(); return; }
@@ -428,7 +467,7 @@
       var p = h.progress || { done: 0, total: 0 };
       out += '<div class="plan-line"><span>Cycle ' + h.plan.cycle + ' · v' + h.plan.version + '</span><span>' +
         (S.net === 'offline' ? 'Offline' : p.done + ' / ' + p.total + ' done') + '</span></div>';
-      if (p.total) {
+      if (p.total && !usesCarousel(h)) {
         var cur = h.cycle_complete ? -1 : p.done;
         out += '<div class="segments" style="grid-template-columns:repeat(' + p.total + ',minmax(0,1fr))" aria-hidden="true">';
         for (var i = 0; i < p.total; i++) out += '<div class="' + (i < p.done ? 'done' : i === cur ? 'current' : '') + '"></div>';
@@ -436,24 +475,34 @@
       }
     }
     out += homeMain(h);
-    out += '<div class="footer"><button class="btn-ghost" type="button" data-act="refresh">Refresh</button>' +
-      '<span class="version">' + APP_VERSION + '</span>' +
+    out += '<div class="footer"><span class="version">' + APP_VERSION + '</span>' +
       '<button class="btn-ghost" type="button" data-act="signout">Sign out</button></div>';
     return out + '</main>';
   }
 
-  function inProgressCard(seq, total, name, logged, planned) {
+  function canDelete() { return !!(S.home && S.home.user && S.home.user.can_delete); }
+  function deleteBtn(uid, seq) {
+    if (!canDelete() || !uid) return '';
+    return '<button class="btn-delete" type="button" data-act="delete-session" data-uid="' + esc(uid) + '" data-seq="' + seq + '">Delete session</button>';
+  }
+
+  function inProgressCard(seq, total, name, logged, planned, uid) {
     var pct = planned ? Math.round((logged / planned) * 100) : 0;
     return '<section class="card active" data-card="in-progress"><div class="kicker"><span class="dot"></span>Session in progress</div>' +
       '<div><div class="big-title">Session ' + seq + (total ? ' <span class="of">of ' + total + '</span>' : '') + '</div>' +
       '<div class="sub">' + esc(name) + '</div></div>' +
       '<div><div class="plan-line" style="font-size:14px;margin-bottom:8px"><span>Sets logged</span><span>' + logged + ' / ' + planned + '</span></div>' +
       '<div class="bar"><div style="width:' + pct + '%"></div></div></div>' +
-      '<button class="btn btn-primary" type="button" data-act="resume">Resume session</button></section>';
+      '<button class="btn btn-primary" type="button" data-act="resume">Resume session</button>' + deleteBtn(uid, seq) + '</section>';
   }
 
   // Charge prévue sur l'accueil et les cartes repliées : « Find load » s'il n'y en a pas (v2).
   function planLoad(ex, kg) { return kg === null || kg === undefined ? 'Find load' : loadLabel(ex, kg); }
+
+  function deletedCard(seq) {
+    return '<section class="card" data-card="deleted"><div class="kicker grey">Session ' + seq + '</div>' +
+      '<div class="sub" style="color:var(--text)">Session ' + seq + ' deleted. Waiting for sync.</div></section>';
+  }
 
   function afterCard(a) {
     return '<section class="card" data-card="after"><div class="kicker grey">Session ' + a.seq + '</div>' +
@@ -464,12 +513,12 @@
   function localInProgressCard(total) {
     var s = S.session, planned = 0, logged = 0;
     s.exercises.forEach(function (ex) { planned += ex.sets; for (var n = 1; n <= ex.sets; n++) if (entry(ex.exercise_id, n)) logged++; });
-    return inProgressCard(s.session_seq, total, s.session_name, logged, planned);
+    return inProgressCard(s.session_seq, total, s.session_name, logged, planned, s.session_uid);
   }
 
   function serverInProgressCard(h, total) {
     var planned = 0; h.session.exercises.forEach(function (ex) { planned += ex.sets; });
-    return inProgressCard(h.session.session_seq, total, h.session.session_name, h.in_progress.sets.length, planned);
+    return inProgressCard(h.session.session_seq, total, h.session.session_name, h.in_progress.sets.length, planned, h.in_progress.session_uid);
   }
 
   function titleBlock(c, total) {
@@ -508,7 +557,7 @@
         }).join('') + '</div>'
       : '<div class="sub">Session skipped.</div>';
     return '<section class="card" data-card="past" data-status="' + c.status + '"><div class="kicker grey">' + (skipped ? 'Skipped' : 'Done') +
-      (c.date ? ' · ' + esc(shortDate(c.date)) : '') + '</div>' + titleBlock(c, total) + list + '</section>';
+      (c.date ? ' · ' + esc(shortDate(c.date)) : '') + '</div>' + titleBlock(c, total) + list + deleteBtn(c.session_uid, c.session_seq) + '</section>';
   }
 
   function upcomingCard(c, total) {
@@ -523,32 +572,37 @@
   function cycleCarousel(h, total) {
     var slides = [], current = null;
     h.cycle_sessions.forEach(function (c) {
-      var seq = c.session_seq, html;
-      if (S.session && !S.session.finished && S.session.session_seq === seq) { html = localInProgressCard(total); current = seq; }
-      else if (S.after && S.after.seq === seq) { html = afterCard(S.after); current = seq; }
-      else if (c.status === 'DONE' || c.status === 'SKIPPED') html = pastCard(c, total);
-      else if (c.status === 'IN_PROGRESS' && h.in_progress && h.session) { html = serverInProgressCard(h, total); if (current === null) current = seq; }
-      else if (c.status === 'NEXT' && h.session) { html = nextCard(h.session, total); if (current === null) current = seq; }
+      var seq = c.session_seq, html, seg = '';
+      var serverUid = c.session_uid || (c.status === 'IN_PROGRESS' && h.in_progress ? h.in_progress.session_uid : null);
+      if (S.session && !S.session.finished && S.session.session_seq === seq) { html = localInProgressCard(total); current = seq; seg = 'current'; }
+      else if (S.after && S.after.seq === seq) { html = afterCard(S.after); current = seq; seg = S.after.kind === 'skipped' ? 'skipped' : 'done'; }
+      else if (serverUid && S.deleting[serverUid]) html = deletedCard(seq);
+      else if (c.status === 'DONE' || c.status === 'SKIPPED') { html = pastCard(c, total); seg = c.status === 'DONE' ? 'done' : 'skipped'; }
+      else if (c.status === 'IN_PROGRESS' && h.in_progress && h.session) { html = serverInProgressCard(h, total); if (current === null) current = seq; seg = 'current'; }
+      else if (c.status === 'NEXT' && h.session) { html = nextCard(h.session, total); if (current === null) current = seq; seg = 'current'; }
       else html = upcomingCard(c, total);
-      slides.push({ seq: String(seq), html: html });
+      slides.push({ seq: String(seq), html: html, seg: seg });
     });
+    var segs = slides.map(function (sl) { return sl.seg; });
     if (h.cycle_complete && !S.session && !S.after) {
       slides.push({ seq: 'end', html: '<section class="card center-card" data-card="cycle-complete">' + logo(72) +
         '<div class="d" style="font-size:30px;font-weight:700;line-height:1.1">Cycle complete. Waiting for the next plan.</div></section>' });
       current = 'end';
     }
     S.slideCurrent = current === null ? (slides.length ? slides[slides.length - 1].seq : null) : String(current);
-    return '<div class="carousel" id="carousel" aria-label="Sessions of the cycle">' + slides.map(function (sl) {
+    // Barre du cycle (v3) : faite = ambre, sautée = gris, courante = blanc, à venir = sombre ; la séance regardée est agrandie.
+    var bar = '<div class="segments" id="segments" style="grid-template-columns:repeat(' + segs.length + ',minmax(0,1fr))" aria-hidden="true">' +
+      segs.map(function (c, i) { return '<div data-seg="' + i + '" class="' + c + '"></div>'; }).join('') + '</div>';
+    return bar + '<div class="carousel" id="carousel" aria-label="Sessions of the cycle">' + slides.map(function (sl) {
       return '<div class="slide" data-seq="' + sl.seq + '"' + (sl.seq === S.slideCurrent ? ' data-current="1"' : '') + '>' + sl.html + '</div>';
-    }).join('') + '</div>' +
-      '<div class="carousel-nav"><button class="nav-btn" type="button" data-act="slide-prev" aria-label="Previous session">‹</button>' +
-      '<div class="dots" aria-hidden="true">' + slides.map(function (sl) { return '<span data-dot="' + sl.seq + '"></span>'; }).join('') + '</div>' +
-      '<button class="nav-btn" type="button" data-act="slide-next" aria-label="Next session">›</button></div>';
+    }).join('') + '</div>';
   }
+
+  function usesCarousel(h) { return !!(h && h.plan && !h.plan_error && h.cycle_sessions && h.cycle_sessions.length); }
 
   function homeMain(h) {
     var total = h && h.progress ? h.progress.total : 0;
-    if (h && h.plan && !h.plan_error && h.cycle_sessions && h.cycle_sessions.length) return cycleCarousel(h, total);
+    if (usesCarousel(h)) return cycleCarousel(h, total);
     if (S.session && !S.session.finished) return localInProgressCard(total);
     if (S.after) return afterCard(S.after);
     if (!h) {
@@ -578,38 +632,28 @@
     els.forEach(function (el, i) { if (Math.abs(el.offsetLeft - x) < Math.abs(els[best].offsetLeft - x)) best = i; });
     return best;
   }
-  function updateDots(c) {
-    var els = slideEls(c), i = viewedIndex(c);
-    Array.prototype.forEach.call(document.querySelectorAll('[data-dot]'), function (d, k) { d.className = k === i ? 'on' : ''; });
-    var prev = document.querySelector('[data-act="slide-prev"]'), next = document.querySelector('[data-act="slide-next"]');
-    if (prev) prev.disabled = i === 0;
-    if (next) next.disabled = i >= els.length - 1;
+  function updateViewed(c) {
+    var i = viewedIndex(c);
+    Array.prototype.forEach.call(document.querySelectorAll('[data-seg]'), function (d, k) { d.classList.toggle('viewed', k === i); });
+    return i;
   }
-  var scrollTimer = null;
-  var slideTarget = null; // diapositive visée pendant un défilement animé (appuis rapides sur les flèches)
+  var scrollFrame = null;
   function afterRender() {
     var c = document.getElementById('carousel');
     if (!c) return;
     var target = S.slideViewed && S.slideViewed.base === S.slideCurrent ? S.slideViewed.seq : S.slideCurrent;
     var el = c.querySelector('.slide[data-seq="' + target + '"]') || c.querySelector('.slide[data-current]');
     if (el) c.scrollLeft = el.offsetLeft - slideEls(c)[0].offsetLeft;
-    updateDots(c);
+    updateViewed(c);
+    // Mise à jour à chaque image pendant le glissement (pas d'attente de fin de mouvement).
     c.addEventListener('scroll', function () {
-      clearTimeout(scrollTimer);
-      scrollTimer = setTimeout(function () {
-        var els = slideEls(c); var i = viewedIndex(c);
+      if (scrollFrame) return;
+      scrollFrame = requestAnimationFrame(function () {
+        scrollFrame = null;
+        var i = updateViewed(c); var els = slideEls(c);
         if (els[i]) S.slideViewed = { seq: els[i].getAttribute('data-seq'), base: S.slideCurrent };
-        slideTarget = null;
-        updateDots(c);
-      }, 100);
+      });
     }, { passive: true });
-  }
-  function moveSlide(dir) {
-    var c = document.getElementById('carousel'); if (!c) return;
-    var els = slideEls(c); var from = slideTarget !== null ? slideTarget : viewedIndex(c);
-    var i = Math.max(0, Math.min(els.length - 1, from + dir));
-    slideTarget = i;
-    c.scrollTo({ left: els[i].offsetLeft - els[0].offsetLeft, behavior: 'smooth' });
   }
 
   function viewSession() {
@@ -766,13 +810,12 @@
       case 'start': startSession(); break;
       case 'resume': resumeSession(); break;
       case 'skip-session': skipSession(); break;
-      case 'refresh': S.slideViewed = null; fetchHome(true).then(flush); break;
       case 'signout':
         if (S.queue.length) S.dialog = { msg: 'Sign out? Unsynced changes will be sent when you sign in again.', ok: 'Sign out', cancel: 'Cancel', run: signOut };
         else { signOut(); return; }
         render(); break;
       case 'dismiss-rejected': S.rejected = []; render(); break;
-      case 'home': S.slideViewed = null; S.view = 'home'; S.timer = null; render(); window.scrollTo(0, 0); if (S.code) fetchHome(false); break;
+      case 'home': S.slideViewed = null; leaveSession(); if (S.code) fetchHome(false); break;
       case 'open-ex': S.expanded = exId; S.active = null; render(); break;
       case 'edit-set': S.active = k; S.expanded = k.split(':')[0]; render(); break;
       case 'load-minus': step(k, 'load', -1); break;
@@ -785,8 +828,7 @@
       case 'skip-rest': S.timer = null; render(); break;
       case 'dlg-ok': var run = S.dialog && S.dialog.run; S.dialog = null; render(); if (run) run(); break;
       case 'dlg-cancel': S.dialog = null; render(); break;
-      case 'slide-prev': moveSlide(-1); break;
-      case 'slide-next': moveSlide(1); break;
+      case 'delete-session': deleteSession(el.getAttribute('data-uid'), Number(el.getAttribute('data-seq'))); break;
     }
   });
 

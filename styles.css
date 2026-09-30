@@ -1,4 +1,4 @@
-/* GYM_APP — styles v2. Ambiance sombre : jamais de fond clair (salle peu éclairée). */
+/* GYM_APP — styles v3. Ambiance sombre : jamais de fond clair (salle peu éclairée). */
 :root {
   --bg: #0F1012;
   --surface: #181A1D;
@@ -70,6 +70,11 @@ a { color: var(--accent); }
 .segments div { height: 6px; border-radius: 3px; background: var(--line); }
 .segments .done { background: var(--accent); }
 .segments .current { background: var(--text); }
+.segments .skipped { background: var(--faint); }
+/* v3 : la barre suit la séance regardée (segment agrandi) */
+.segments { align-items: center; min-height: 12px; }
+.segments div { transition: height .12s ease; }
+.segments div.viewed { height: 12px; border-radius: 4px; box-shadow: 0 0 0 1.5px var(--bg), 0 0 0 3px var(--muted); }
 .card { background: var(--surface); border: 1px solid var(--line); border-radius: 20px; padding: 22px 20px 20px; display: flex; flex-direction: column; gap: 16px; }
 .card.active { border-color: var(--accent); }
 .kicker { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; letter-spacing: .12em; text-transform: uppercase; color: var(--accent); }
@@ -151,9 +156,6 @@ a { color: var(--accent); }
 .carousel::-webkit-scrollbar { display: none; }
 .slide { flex: 0 0 100%; min-width: 0; scroll-snap-align: start; scroll-snap-stop: always; display: flex; }
 .slide > .card { flex: 1; }
-.carousel-nav { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: -8px; }
-.nav-btn { width: 44px; height: 44px; border-radius: 12px; border: 1px solid var(--line); background: var(--surface); font-size: 24px; line-height: 1; }
-.nav-btn:disabled { opacity: .35; }
-.dots { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; }
-.dots span { width: 6px; height: 6px; border-radius: 3px; background: var(--line-2); }
-.dots span.on { width: 16px; background: var(--accent); }
+
+/* Suppression d'une séance (v3, Rémy uniquement) */
+.btn-delete { align-self: center; height: 44px; padding: 0 12px; border: 0; background: transparent; color: var(--danger); font-size: 15px; font-weight: 600; }
