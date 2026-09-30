@@ -1,11 +1,11 @@
-// GYM_APP — front end v4
+// GYM_APP — front end v5
 // Référence fonctionnelle : PROJECT_SPEC.md. Tous les textes affichés sont en anglais.
 // Toute modification (démarrer, série, fin, saut) est d'abord appliquée localement,
 // mise en file d'attente, puis envoyée au Worker par POST /sync dès que possible.
 (function () {
   'use strict';
 
-  var APP_VERSION = 'v4';
+  var APP_VERSION = 'v5';
   var WORKER = ((window.GYM_CONFIG && window.GYM_CONFIG.workerUrl) || '').replace(/\/+$/, '');
   var REQUEST_TIMEOUT_MS = 10000;
   var RETRY_MS = 15000;
@@ -47,6 +47,7 @@
     loginError: null,
     loginBusy: false,
     dialog: null,
+    pin: '',            // (v5) chiffres saisis sur le pavé de connexion
     slideCurrent: null, // séance courante du carrousel (v2)
     slideViewed: null,  // séance regardée par l'utilisateur { seq, base }
     deleting: {},       // (v3) séances supprimées en attente d'envoi : { session_uid: seq }
@@ -227,19 +228,33 @@
       store.set('gymapp.code', code); store.set('gymapp.user', S.user);
       loadUserState();
       S.home = data; store.set(key('home'), data);
-      S.loginBusy = false; S.view = 'home'; S.net = 'ok'; S.homeError = null;
+      S.loginBusy = false; S.pin = ''; S.view = 'home'; S.net = 'ok'; S.homeError = null;
       render(); flush();
     }, function (err) {
-      S.loginBusy = false;
-      S.loginError = err.status === 401 ? 'Invalid access code.' : err.network ? 'No connection. Try again.' : 'Server error. Try again later.';
+      S.loginBusy = false; S.pin = '';
+      S.loginError = err.status === 401 ? 'Invalid access code.' : err.status === 429 ? 'Too many attempts. Try again later.' :
+        err.network ? 'No connection. Try again.' : 'Server error. Try again later.';
       render();
     });
+  }
+
+  // Pavé de code à 4 chiffres (v5) : aucun champ de saisie, donc jamais le clavier du téléphone.
+  var PIN_LENGTH = 4;
+  function pinPress(d) {
+    if (S.code || S.loginBusy || S.pin.length >= PIN_LENGTH) return;
+    S.pin += d; S.loginError = null;
+    render();
+    if (S.pin.length === PIN_LENGTH) signIn(S.pin);
+  }
+  function pinDelete() {
+    if (S.code || S.loginBusy || !S.pin) return;
+    S.pin = S.pin.slice(0, -1); S.loginError = null; render();
   }
 
   function signOut() {
     store.del('gymapp.code'); store.del('gymapp.user');
     S.code = null; S.user = null; S.view = 'login'; S.home = null; S.session = null; S.after = null;
-    S.queue = []; S.rejected = []; S.timer = null; S.dialog = null; S.loginError = null;
+    S.queue = []; S.rejected = []; S.timer = null; S.dialog = null; S.loginError = null; S.pin = '';
     render();
   }
 
@@ -461,15 +476,22 @@
   }
 
   function viewLogin() {
-    var err = S.loginError;
+    var err = S.loginError, dots = '';
+    for (var i = 0; i < PIN_LENGTH; i++) dots += '<span class="' + (i < S.pin.length ? 'on' : '') + '"></span>';
+    var key = function (label, act, digit, aria) {
+      return '<button class="key" type="button" data-act="' + act + '"' + (digit !== null ? ' data-digit="' + digit + '"' : '') +
+        (aria ? ' aria-label="' + aria + '"' : '') + (S.loginBusy ? ' disabled' : '') + '>' + label + '</button>';
+    };
+    var keys = '';
+    ['1', '2', '3', '4', '5', '6', '7', '8', '9'].forEach(function (d) { keys += key(d, 'pin', d); });
+    keys += '<span class="key-empty"></span>' + key('0', 'pin', '0') +
+      key('<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 5H9l-6 7 6 7h12z"/><path d="m17 9-6 6M11 9l6 6"/></svg>', 'pin-del', null, 'Delete');
     return '<main class="screen login">' +
       '<div class="login-brand"><h1 class="wordmark" aria-label="Gym App"><span>G</span>' + logo(52) + '<span>M</span></h1></div>' +
-      '<form data-form="login" novalidate>' +
-      '<label class="field-label" for="code">Access code</label>' +
-      '<input id="code" name="code" class="text-input' + (err ? ' has-error' : '') + '" type="password" placeholder="Access code" autocomplete="current-password" autocapitalize="off" required>' +
-      (err ? '<div class="form-error" role="alert">' + esc(err) + '</div>' : '') +
-      '<button class="btn btn-primary" type="submit" style="margin-top:8px"' + (S.loginBusy ? ' disabled' : '') + '>Sign in</button>' +
-      '</form></main>';
+      '<div class="pin"><div class="pin-label" id="pin-label">Enter your code</div>' +
+      '<div class="pin-dots' + (err ? ' has-error' : '') + '" aria-live="polite" aria-label="' + S.pin.length + ' of ' + PIN_LENGTH + ' digits entered">' + dots + '</div>' +
+      '<div class="form-error" role="alert">' + (err ? esc(err) : '') + '</div></div>' +
+      '<div class="keypad" role="group" aria-labelledby="pin-label">' + keys + '</div></main>';
   }
 
   function viewHome() {
@@ -838,13 +860,11 @@
   // -------------------------------------------------------------------------
   // Événements
   // -------------------------------------------------------------------------
-  root.addEventListener('submit', function (e) {
-    var f = e.target;
-    if (f.getAttribute('data-form') !== 'login') return;
-    e.preventDefault();
-    var code = (f.elements.code.value || '').trim();
-    if (!code || S.loginBusy) return;
-    signIn(code);
+  // Sur ordinateur, les touches 0 à 9 et Retour arrière pilotent aussi le pavé (v5).
+  document.addEventListener('keydown', function (e) {
+    if (S.code || e.ctrlKey || e.metaKey || e.altKey) return;
+    if (/^[0-9]$/.test(e.key)) { e.preventDefault(); pinPress(e.key); }
+    else if (e.key === 'Backspace') { e.preventDefault(); pinDelete(); }
   });
 
   root.addEventListener('input', function (e) {
@@ -863,6 +883,8 @@
     var el = e.target.closest('[data-act]'); if (!el) return;
     var act = el.getAttribute('data-act'); var k = el.getAttribute('data-key'); var exId = el.getAttribute('data-ex');
     switch (act) {
+      case 'pin': pinPress(el.getAttribute('data-digit')); break;
+      case 'pin-del': pinDelete(); break;
       case 'start': startSession(); break;
       case 'resume': resumeSession(); break;
       case 'skip-session': skipSession(); break;

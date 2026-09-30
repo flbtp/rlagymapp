@@ -1,4 +1,4 @@
-/* GYM_APP — styles v4. Ambiance sombre : jamais de fond clair (salle peu éclairée). */
+/* GYM_APP — styles v5. Ambiance sombre : jamais de fond clair (salle peu éclairée). */
 :root {
   --bg: #0F1012;
   --surface: #181A1D;
@@ -23,9 +23,11 @@
   color-scheme: dark;
 }
 
-* { box-sizing: border-box; }
+*, *::before, *::after { box-sizing: border-box; }
+html { height: 100%; }
 html, body { margin: 0; background: var(--bg); color: var(--text); font-family: var(--body); font-size: 16px; -webkit-tap-highlight-color: transparent; }
-body { min-height: 100vh; min-height: 100dvh; } /* dvh : hauteur réellement visible sur mobile (v4) */
+/* v5 : aucune hauteur sur body ; la hauteur d'écran est portée par .screen. Pas de débordement horizontal. */
+body { overflow-x: clip; }
 button, input { font: inherit; color: inherit; }
 button { cursor: pointer; }
 button:disabled { cursor: default; }
@@ -33,7 +35,8 @@ a { color: var(--accent); }
 .d { font-family: var(--display); }
 .muted { color: var(--muted); }
 
-.screen { max-width: 480px; margin: 0 auto; min-height: 100vh; min-height: 100dvh; padding: calc(12px + env(safe-area-inset-top)) 20px calc(16px + env(safe-area-inset-bottom)); display: flex; flex-direction: column; gap: 20px; }
+/* v5 : 100svh = hauteur avec la barre d'adresse affichée (le contenu tient toujours) ; marges de sécurité comprises (border-box). */
+.screen { --gap: 20px; --pad-top: 12px; --pad-bottom: 16px; max-width: 480px; margin: 0 auto; min-height: 100vh; min-height: 100svh; padding: calc(var(--pad-top) + env(safe-area-inset-top, 0px)) 20px calc(var(--pad-bottom) + env(safe-area-inset-bottom, 0px)); display: flex; flex-direction: column; gap: var(--gap); }
 .screen.has-timer { padding-bottom: 130px; }
 
 /* Boutons */
@@ -55,7 +58,6 @@ a { color: var(--accent); }
 .badge-skipped { background: var(--surface-2); color: var(--muted); }
 
 /* Connexion */
-.login { justify-content: center; gap: 40px; }
 .login-brand { display: flex; flex-direction: column; align-items: center; gap: 16px; }
 .wordmark { display: flex; align-items: center; gap: 2px; font-family: var(--display); font-size: 52px; font-weight: 700; letter-spacing: .04em; line-height: 1; margin: 0; }
 .login form { display: flex; flex-direction: column; gap: 12px; }
@@ -66,7 +68,7 @@ a { color: var(--accent); }
 
 /* Accueil */
 .plan-line { display: flex; align-items: baseline; justify-content: space-between; font-size: 15px; color: var(--muted); }
-.segments { display: grid; gap: 4px; margin-top: -12px; }
+.segments { display: grid; gap: 4px; margin-top: calc(8px - var(--gap)); }
 .segments div { height: 6px; border-radius: 3px; background: var(--line); }
 .segments .done { background: var(--accent); }
 .segments .current { background: var(--text); }
@@ -171,3 +173,40 @@ a { color: var(--accent); }
 .note-edit textarea:focus { outline: none; border-color: var(--accent); }
 .note-actions { display: flex; justify-content: flex-end; gap: 8px; }
 .note-save { height: 44px; padding: 0 18px; border-radius: 12px; border: 0; background: var(--accent); color: var(--accent-ink); font-weight: 700; font-size: 15px; }
+
+/* Pavé de connexion (v5) */
+.login { justify-content: center; gap: 32px; }
+.pin { display: flex; flex-direction: column; align-items: center; gap: 14px; }
+.pin-label { font-size: 16px; color: var(--muted); }
+.pin-dots { display: flex; gap: 18px; }
+.pin-dots span { width: 16px; height: 16px; border-radius: 8px; border: 2px solid var(--line-2); }
+.pin-dots span.on { background: var(--accent); border-color: var(--accent); }
+.pin-dots.has-error span { border-color: var(--danger); }
+.pin .form-error { min-height: 20px; }
+.keypad { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; width: 100%; max-width: 320px; margin: 0 auto; }
+.key { height: 64px; border-radius: 16px; border: 1px solid var(--line); background: var(--surface); font-family: var(--display); font-size: 30px; font-weight: 600; display: flex; align-items: center; justify-content: center; touch-action: manipulation; user-select: none; -webkit-user-select: none; }
+.key:active { background: var(--surface-2); }
+.key:disabled { opacity: .5; }
+
+/* Écrans courts (v5) : on resserre seulement les espacements et les tailles, jamais le contenu. */
+@media (max-height: 900px) {
+  .screen { --gap: 14px; --pad-top: 10px; --pad-bottom: 12px; }
+  .card { padding: 18px 16px 16px; gap: 12px; }
+  .big-title { font-size: 38px; }
+  .btn { height: 50px; font-size: 19px; }
+  .ex-list { gap: 6px; padding: 12px 0; }
+  .login { gap: 24px; }
+}
+@media (max-height: 780px) {
+  .screen { --gap: 10px; --pad-top: 8px; --pad-bottom: 8px; }
+  .card { padding: 14px 14px 12px; gap: 10px; }
+  .big-title { font-size: 32px; }
+  .sub { font-size: 15px; }
+  .btn { height: 46px; font-size: 18px; }
+  .ex-list { gap: 4px; padding: 8px 0; }
+  .ex-list div { font-size: 14px; }
+  .login { gap: 18px; }
+  .wordmark { font-size: 44px; }
+  .key { height: 56px; font-size: 26px; }
+  .keypad { gap: 10px; }
+}
