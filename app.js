@@ -1,11 +1,11 @@
-// GYM_APP — front end v1
+// GYM_APP — front end v2
 // Référence fonctionnelle : PROJECT_SPEC.md. Tous les textes affichés sont en anglais.
 // Toute modification (démarrer, série, fin, saut) est d'abord appliquée localement,
 // mise en file d'attente, puis envoyée au Worker par POST /sync dès que possible.
 (function () {
   'use strict';
 
-  var APP_VERSION = 'v1';
+  var APP_VERSION = 'v2';
   var WORKER = ((window.GYM_CONFIG && window.GYM_CONFIG.workerUrl) || '').replace(/\/+$/, '');
   var REQUEST_TIMEOUT_MS = 10000;
   var RETRY_MS = 15000;
@@ -47,6 +47,8 @@
     loginError: null,
     loginBusy: false,
     dialog: null,
+    slideCurrent: null, // séance courante du carrousel (v2)
+    slideViewed: null,  // séance regardée par l'utilisateur { seq, base }
     expanded: null,    // exercice ouvert choisi par l'utilisateur
     active: null,      // série en cours de saisie ou de correction ("exercise_id:set_no")
     drafts: {},
@@ -339,8 +341,8 @@
         }
         if (S.expanded === exId) S.expanded = null;
         if (S.active && S.active.indexOf(exId + ':') === 0) S.active = null;
-        saveSession(); render();
-        ops.forEach(function (op) { S.queue.push(op); }); saveQueue(); flush();
+        ops.forEach(function (op) { S.queue.push(op); }); saveQueue();
+        saveSession(); render(); flush();
       }
     };
     render();
@@ -393,6 +395,7 @@
     else { S.view = 'home'; html = viewHome(); }
     if (S.dialog) html += viewDialog();
     root.innerHTML = html;
+    afterRender();
   }
 
   function syncChip() {
@@ -449,18 +452,105 @@
       '<button class="btn btn-primary" type="button" data-act="resume">Resume session</button></section>';
   }
 
+  // Charge prévue sur l'accueil et les cartes repliées : « Find load » s'il n'y en a pas (v2).
+  function planLoad(ex, kg) { return kg === null || kg === undefined ? 'Find load' : loadLabel(ex, kg); }
+
+  function afterCard(a) {
+    return '<section class="card" data-card="after"><div class="kicker grey">Session ' + a.seq + '</div>' +
+      '<div class="sub" style="color:var(--text)">' + (a.kind === 'skipped' ? 'Session ' + a.seq + ' skipped.' : 'Session ' + a.seq + ' finished.') +
+      ' Waiting for sync to show the next session.</div></section>';
+  }
+
+  function localInProgressCard(total) {
+    var s = S.session, planned = 0, logged = 0;
+    s.exercises.forEach(function (ex) { planned += ex.sets; for (var n = 1; n <= ex.sets; n++) if (entry(ex.exercise_id, n)) logged++; });
+    return inProgressCard(s.session_seq, total, s.session_name, logged, planned);
+  }
+
+  function serverInProgressCard(h, total) {
+    var planned = 0; h.session.exercises.forEach(function (ex) { planned += ex.sets; });
+    return inProgressCard(h.session.session_seq, total, h.session.session_name, h.in_progress.sets.length, planned);
+  }
+
+  function titleBlock(c, total) {
+    return '<div><div class="big-title">Session ' + c.session_seq + ' <span class="of">of ' + total + '</span></div>' +
+      '<div class="sub">Block ' + c.block + ' · ' + esc(c.session_id) + ' · ' + esc(c.session_name) + '</div></div>';
+  }
+
+  function nextCard(d, total) {
+    return '<section class="card" data-card="next"><div class="kicker">Next session</div>' + titleBlock(d, total) +
+      '<div class="ex-list">' + d.exercises.map(function (ex) {
+        return '<div><span>' + esc(ex.exercise_name) + '</span><span class="load">' + planLoad(ex, ex.proposed_load_kg) + '</span></div>';
+      }).join('') + '</div>' +
+      '<button class="btn btn-primary" type="button" data-act="start">Start session</button>' +
+      '<button class="btn btn-secondary" type="button" data-act="skip-session">Skip session</button></section>';
+  }
+
+  function shortDate(iso) {
+    var d = new Date(iso);
+    if (isNaN(d.getTime())) return '';
+    try { return d.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' }); } catch (e) { return iso.slice(0, 10); }
+  }
+
+  function pastSummary(ex) {
+    var done = ex.sets.filter(function (x) { return x.status === 'DONE'; });
+    if (!done.length) return 'Skipped';
+    var same = done.every(function (x) { return x.load_kg === done[0].load_kg; });
+    if (same) return loadLabel(ex, done[0].load_kg) + ' × ' + done.map(function (x) { return x.reps; }).join(' / ');
+    return done.map(function (x) { return loadLabel(ex, x.load_kg) + ' × ' + x.reps; }).join(' / ');
+  }
+
+  function pastCard(c, total) {
+    var skipped = c.status === 'SKIPPED';
+    var list = c.exercises.length
+      ? '<div class="ex-list">' + c.exercises.map(function (ex) {
+          return '<div><span>' + esc(ex.exercise_name) + '</span><span class="load">' + esc(pastSummary(ex)) + '</span></div>';
+        }).join('') + '</div>'
+      : '<div class="sub">Session skipped.</div>';
+    return '<section class="card" data-card="past" data-status="' + c.status + '"><div class="kicker grey">' + (skipped ? 'Skipped' : 'Done') +
+      (c.date ? ' · ' + esc(shortDate(c.date)) : '') + '</div>' + titleBlock(c, total) + list + '</section>';
+  }
+
+  function upcomingCard(c, total) {
+    return '<section class="card" data-card="upcoming"><div class="kicker grey">Upcoming</div>' + titleBlock(c, total) +
+      '<div class="ex-list">' + c.exercises.map(function (ex) {
+        return '<div><span>' + esc(ex.exercise_name) + '</span><span class="load">' + planLoad(ex, ex.proposed_load_kg) + '</span></div>';
+      }).join('') + '</div>' +
+      '<div class="muted" style="font-size:14px">Planned loads, updated after each session.</div></section>';
+  }
+
+  // Carrousel de tout le cycle (v2) : une diapositive par séance, glisser ou flèches « ‹ › ».
+  function cycleCarousel(h, total) {
+    var slides = [], current = null;
+    h.cycle_sessions.forEach(function (c) {
+      var seq = c.session_seq, html;
+      if (S.session && !S.session.finished && S.session.session_seq === seq) { html = localInProgressCard(total); current = seq; }
+      else if (S.after && S.after.seq === seq) { html = afterCard(S.after); current = seq; }
+      else if (c.status === 'DONE' || c.status === 'SKIPPED') html = pastCard(c, total);
+      else if (c.status === 'IN_PROGRESS' && h.in_progress && h.session) { html = serverInProgressCard(h, total); if (current === null) current = seq; }
+      else if (c.status === 'NEXT' && h.session) { html = nextCard(h.session, total); if (current === null) current = seq; }
+      else html = upcomingCard(c, total);
+      slides.push({ seq: String(seq), html: html });
+    });
+    if (h.cycle_complete && !S.session && !S.after) {
+      slides.push({ seq: 'end', html: '<section class="card center-card" data-card="cycle-complete">' + logo(72) +
+        '<div class="d" style="font-size:30px;font-weight:700;line-height:1.1">Cycle complete. Waiting for the next plan.</div></section>' });
+      current = 'end';
+    }
+    S.slideCurrent = current === null ? (slides.length ? slides[slides.length - 1].seq : null) : String(current);
+    return '<div class="carousel" id="carousel" aria-label="Sessions of the cycle">' + slides.map(function (sl) {
+      return '<div class="slide" data-seq="' + sl.seq + '"' + (sl.seq === S.slideCurrent ? ' data-current="1"' : '') + '>' + sl.html + '</div>';
+    }).join('') + '</div>' +
+      '<div class="carousel-nav"><button class="nav-btn" type="button" data-act="slide-prev" aria-label="Previous session">‹</button>' +
+      '<div class="dots" aria-hidden="true">' + slides.map(function (sl) { return '<span data-dot="' + sl.seq + '"></span>'; }).join('') + '</div>' +
+      '<button class="nav-btn" type="button" data-act="slide-next" aria-label="Next session">›</button></div>';
+  }
+
   function homeMain(h) {
     var total = h && h.progress ? h.progress.total : 0;
-    if (S.session && !S.session.finished) {
-      var s = S.session, planned = 0, logged = 0;
-      s.exercises.forEach(function (ex) { planned += ex.sets; for (var n = 1; n <= ex.sets; n++) if (entry(ex.exercise_id, n)) logged++; });
-      return inProgressCard(s.session_seq, total, s.session_name, logged, planned);
-    }
-    if (S.after) {
-      return '<section class="card" data-card="after"><div class="kicker grey">Session ' + S.after.seq + '</div>' +
-        '<div class="sub" style="color:var(--text)">' + (S.after.kind === 'skipped' ? 'Session ' + S.after.seq + ' skipped.' : 'Session ' + S.after.seq + ' finished.') +
-        ' Waiting for sync to show the next session.</div></section>';
-    }
+    if (h && h.plan && !h.plan_error && h.cycle_sessions && h.cycle_sessions.length) return cycleCarousel(h, total);
+    if (S.session && !S.session.finished) return localInProgressCard(total);
+    if (S.after) return afterCard(S.after);
     if (!h) {
       return '<section class="card" data-card="no-data"><div class="sub" style="color:var(--text)">' + esc(S.homeError || 'Loading…') + '</div></section>';
     }
@@ -475,20 +565,51 @@
       return '<section class="card center-card" data-card="cycle-complete">' + logo(72) +
         '<div class="d" style="font-size:30px;font-weight:700;line-height:1.1">Cycle complete. Waiting for the next plan.</div></section>';
     }
-    if (h.in_progress && h.session) {
-      var planned2 = 0; h.session.exercises.forEach(function (ex) { planned2 += ex.sets; });
-      return inProgressCard(h.session.session_seq, total, h.session.session_name, h.in_progress.sets.length, planned2);
-    }
+    if (h.in_progress && h.session) return serverInProgressCard(h, total);
     if (!h.session) return '';
-    var d = h.session;
-    return '<section class="card" data-card="next"><div class="kicker">Next session</div>' +
-      '<div><div class="big-title">Session ' + d.session_seq + ' <span class="of">of ' + total + '</span></div>' +
-      '<div class="sub">Block ' + d.block + ' · ' + esc(d.session_id) + ' · ' + esc(d.session_name) + '</div></div>' +
-      '<div class="ex-list">' + d.exercises.map(function (ex) {
-        return '<div><span>' + esc(ex.exercise_name) + '</span><span class="load">' + loadLabel(ex, ex.proposed_load_kg) + '</span></div>';
-      }).join('') + '</div>' +
-      '<button class="btn btn-primary" type="button" data-act="start">Start session</button>' +
-      '<button class="btn btn-secondary" type="button" data-act="skip-session">Skip session</button></section>';
+    return nextCard(h.session, total);
+  }
+
+  // Position du carrousel : on garde la séance regardée tant que la séance courante ne change pas.
+  function slideEls(c) { return Array.prototype.slice.call(c.querySelectorAll('.slide')); }
+  function viewedIndex(c) {
+    var els = slideEls(c); if (!els.length) return 0;
+    var x = c.scrollLeft + els[0].offsetLeft, best = 0;
+    els.forEach(function (el, i) { if (Math.abs(el.offsetLeft - x) < Math.abs(els[best].offsetLeft - x)) best = i; });
+    return best;
+  }
+  function updateDots(c) {
+    var els = slideEls(c), i = viewedIndex(c);
+    Array.prototype.forEach.call(document.querySelectorAll('[data-dot]'), function (d, k) { d.className = k === i ? 'on' : ''; });
+    var prev = document.querySelector('[data-act="slide-prev"]'), next = document.querySelector('[data-act="slide-next"]');
+    if (prev) prev.disabled = i === 0;
+    if (next) next.disabled = i >= els.length - 1;
+  }
+  var scrollTimer = null;
+  var slideTarget = null; // diapositive visée pendant un défilement animé (appuis rapides sur les flèches)
+  function afterRender() {
+    var c = document.getElementById('carousel');
+    if (!c) return;
+    var target = S.slideViewed && S.slideViewed.base === S.slideCurrent ? S.slideViewed.seq : S.slideCurrent;
+    var el = c.querySelector('.slide[data-seq="' + target + '"]') || c.querySelector('.slide[data-current]');
+    if (el) c.scrollLeft = el.offsetLeft - slideEls(c)[0].offsetLeft;
+    updateDots(c);
+    c.addEventListener('scroll', function () {
+      clearTimeout(scrollTimer);
+      scrollTimer = setTimeout(function () {
+        var els = slideEls(c); var i = viewedIndex(c);
+        if (els[i]) S.slideViewed = { seq: els[i].getAttribute('data-seq'), base: S.slideCurrent };
+        slideTarget = null;
+        updateDots(c);
+      }, 100);
+    }, { passive: true });
+  }
+  function moveSlide(dir) {
+    var c = document.getElementById('carousel'); if (!c) return;
+    var els = slideEls(c); var from = slideTarget !== null ? slideTarget : viewedIndex(c);
+    var i = Math.max(0, Math.min(els.length - 1, from + dir));
+    slideTarget = i;
+    c.scrollTo({ left: els[i].offsetLeft - els[0].offsetLeft, behavior: 'smooth' });
   }
 
   function viewSession() {
@@ -546,7 +667,7 @@
       }
       return '<section class="ex" data-ex="' + id + '"><button class="ex-head" type="button" data-act="open-ex" data-ex="' + id + '">' +
         '<span style="display:flex;flex-direction:column;gap:2px">' + nameLine(ex) + '<span class="ex-meta">' + esc(repsText(ex)) + ' · ' + rirText(ex) + ' · ' + restText(ex) + '</span></span>' +
-        (allSkipped ? '<span class="badge badge-skipped">Skipped</span>' : '<span class="compact-load">' + loadLabel(ex, ex.proposed_load_kg) + '</span>') +
+        (allSkipped ? '<span class="badge badge-skipped">Skipped</span>' : '<span class="compact-load">' + planLoad(ex, ex.proposed_load_kg) + '</span>') +
         '</button></section>';
     }
     var out = '<section class="ex open" data-ex="' + id + '">';
@@ -645,13 +766,13 @@
       case 'start': startSession(); break;
       case 'resume': resumeSession(); break;
       case 'skip-session': skipSession(); break;
-      case 'refresh': fetchHome(true).then(flush); break;
+      case 'refresh': S.slideViewed = null; fetchHome(true).then(flush); break;
       case 'signout':
         if (S.queue.length) S.dialog = { msg: 'Sign out? Unsynced changes will be sent when you sign in again.', ok: 'Sign out', cancel: 'Cancel', run: signOut };
         else { signOut(); return; }
         render(); break;
       case 'dismiss-rejected': S.rejected = []; render(); break;
-      case 'home': S.view = 'home'; S.timer = null; render(); window.scrollTo(0, 0); if (S.code) fetchHome(false); break;
+      case 'home': S.slideViewed = null; S.view = 'home'; S.timer = null; render(); window.scrollTo(0, 0); if (S.code) fetchHome(false); break;
       case 'open-ex': S.expanded = exId; S.active = null; render(); break;
       case 'edit-set': S.active = k; S.expanded = k.split(':')[0]; render(); break;
       case 'load-minus': step(k, 'load', -1); break;
@@ -664,6 +785,8 @@
       case 'skip-rest': S.timer = null; render(); break;
       case 'dlg-ok': var run = S.dialog && S.dialog.run; S.dialog = null; render(); if (run) run(); break;
       case 'dlg-cancel': S.dialog = null; render(); break;
+      case 'slide-prev': moveSlide(-1); break;
+      case 'slide-next': moveSlide(1); break;
     }
   });
 
