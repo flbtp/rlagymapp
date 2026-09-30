@@ -1,4 +1,4 @@
-/* GYM_APP — styles v3. Ambiance sombre : jamais de fond clair (salle peu éclairée). */
+/* GYM_APP — styles v4. Ambiance sombre : jamais de fond clair (salle peu éclairée). */
 :root {
   --bg: #0F1012;
   --surface: #181A1D;
@@ -25,7 +25,7 @@
 
 * { box-sizing: border-box; }
 html, body { margin: 0; background: var(--bg); color: var(--text); font-family: var(--body); font-size: 16px; -webkit-tap-highlight-color: transparent; }
-body { min-height: 100vh; }
+body { min-height: 100vh; min-height: 100dvh; } /* dvh : hauteur réellement visible sur mobile (v4) */
 button, input { font: inherit; color: inherit; }
 button { cursor: pointer; }
 button:disabled { cursor: default; }
@@ -33,7 +33,7 @@ a { color: var(--accent); }
 .d { font-family: var(--display); }
 .muted { color: var(--muted); }
 
-.screen { max-width: 480px; margin: 0 auto; min-height: 100vh; padding: calc(12px + env(safe-area-inset-top)) 20px calc(16px + env(safe-area-inset-bottom)); display: flex; flex-direction: column; gap: 20px; }
+.screen { max-width: 480px; margin: 0 auto; min-height: 100vh; min-height: 100dvh; padding: calc(12px + env(safe-area-inset-top)) 20px calc(16px + env(safe-area-inset-bottom)); display: flex; flex-direction: column; gap: 20px; }
 .screen.has-timer { padding-bottom: 130px; }
 
 /* Boutons */
@@ -159,3 +159,15 @@ a { color: var(--accent); }
 
 /* Suppression d'une séance (v3, Rémy uniquement) */
 .btn-delete { align-self: center; height: 44px; padding: 0 12px; border: 0; background: transparent; color: var(--danger); font-size: 15px; font-weight: 600; }
+
+/* v4 : badge « Shared » dans les listes de l'accueil, notes pour Trainer */
+.ex-lname { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; min-width: 0; }
+.ex-list .badge { height: 20px; font-size: 11px; }
+.note-line { margin: 0; font-size: 14px; line-height: 1.4; color: var(--muted); font-style: italic; }
+.ex-list .note-line { margin-top: -4px; }
+.note-view { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.note-edit { display: flex; flex-direction: column; gap: 8px; }
+.note-edit textarea { width: 100%; min-height: 84px; resize: vertical; padding: 10px 12px; border-radius: 12px; border: 1.5px solid var(--line-2); background: var(--surface-2); font-size: 16px; line-height: 1.4; }
+.note-edit textarea:focus { outline: none; border-color: var(--accent); }
+.note-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.note-save { height: 44px; padding: 0 18px; border-radius: 12px; border: 0; background: var(--accent); color: var(--accent-ink); font-weight: 700; font-size: 15px; }

@@ -1,11 +1,11 @@
-// GYM_APP — front end v3
+// GYM_APP — front end v4
 // Référence fonctionnelle : PROJECT_SPEC.md. Tous les textes affichés sont en anglais.
 // Toute modification (démarrer, série, fin, saut) est d'abord appliquée localement,
 // mise en file d'attente, puis envoyée au Worker par POST /sync dès que possible.
 (function () {
   'use strict';
 
-  var APP_VERSION = 'v3';
+  var APP_VERSION = 'v4';
   var WORKER = ((window.GYM_CONFIG && window.GYM_CONFIG.workerUrl) || '').replace(/\/+$/, '');
   var REQUEST_TIMEOUT_MS = 10000;
   var RETRY_MS = 15000;
@@ -50,6 +50,8 @@
     slideCurrent: null, // séance courante du carrousel (v2)
     slideViewed: null,  // séance regardée par l'utilisateur { seq, base }
     deleting: {},       // (v3) séances supprimées en attente d'envoi : { session_uid: seq }
+    noteEdit: null,     // (v4) exercice dont la note est en cours de saisie
+    noteDraft: '',      // (v4) texte en cours de saisie
     ignorePop: 0,       // (v3) retours d'historique déclenchés par l'app elle-même
     expanded: null,    // exercice ouvert choisi par l'utilisateur
     active: null,      // série en cours de saisie ou de correction ("exercise_id:set_no")
@@ -208,6 +210,12 @@
 
   setInterval(function () { if (S.queue.length) flush(); }, RETRY_MS);
   window.addEventListener('online', function () { flush(); if (S.code) fetchHome(false); });
+  // v4 : au retour au premier plan (iPhone : pas de tirage pour recharger), on envoie et on recharge l'accueil.
+  document.addEventListener('visibilitychange', function () {
+    if (document.visibilityState !== 'visible' || !S.code) return;
+    flush();
+    if (S.view === 'home') fetchHome(true);
+  });
 
   // -------------------------------------------------------------------------
   // Actions
@@ -239,7 +247,7 @@
     return {
       session_uid: uid, cycle: cycle, plan_version: planVersion, session_seq: detail.session_seq,
       block: detail.block, session_id: detail.session_id, session_name: detail.session_name,
-      warmup: detail.warmup, exercises: detail.exercises, sets: {}, started_at: startedAt, finished: false
+      warmup: detail.warmup, exercises: detail.exercises, sets: {}, notes: {}, started_at: startedAt, finished: false
     };
   }
 
@@ -256,6 +264,7 @@
       var ip = S.home.in_progress;
       S.session = buildSession(S.home.session, ip.session_uid, ip.cycle, ip.plan_version, ip.started_at);
       ip.sets.forEach(function (x) { S.session.sets[x.exercise_id + ':' + x.set_no] = { load_kg: x.load_kg, reps: x.reps, status: x.status }; });
+      (ip.notes || []).forEach(function (n) { S.session.notes[n.exercise_id] = n.note; });
       saveSession();
     }
     if (!S.session) return;
@@ -294,7 +303,7 @@
     if (S.view === 'session') { S.view = 'home'; S.timer = null; S.slideViewed = null; resetSessionUi(); render(); window.scrollTo(0, 0); if (S.code) fetchHome(false); }
   });
 
-  function resetSessionUi() { S.expanded = null; S.active = null; S.drafts = {}; S.timer = null; }
+  function resetSessionUi() { S.noteEdit = null; S.noteDraft = ''; S.expanded = null; S.active = null; S.drafts = {}; S.timer = null; }
 
   function skipSession() {
     var h = S.home; if (!h || !h.session || !h.plan) return;
@@ -433,7 +442,16 @@
     else if (S.view === 'session' && S.session) html = viewSession();
     else { S.view = 'home'; html = viewHome(); }
     if (S.dialog) html += viewDialog();
+    // v4 : un nouveau rendu (synchronisation, minuteur) ne doit pas faire perdre la saisie en cours.
+    var a = document.activeElement, keep = null;
+    if (a && a.id && root.contains(a) && (a.tagName === 'TEXTAREA' || a.tagName === 'INPUT')) {
+      try { keep = { id: a.id, start: a.selectionStart, end: a.selectionEnd }; } catch (e) { keep = { id: a.id }; }
+    }
     root.innerHTML = html;
+    if (keep) {
+      var n = document.getElementById(keep.id);
+      if (n) { n.focus(); try { if (keep.start !== undefined && keep.start !== null) n.setSelectionRange(keep.start, keep.end); } catch (e) { /* ignoré */ } }
+    }
     afterRender();
   }
 
@@ -526,10 +544,14 @@
       '<div class="sub">Block ' + c.block + ' · ' + esc(c.session_id) + ' · ' + esc(c.session_name) + '</div></div>';
   }
 
+  function listName(ex) {
+    return '<span class="ex-lname">' + esc(ex.exercise_name) + (ex.shared ? ' <span class="badge badge-shared">Shared</span>' : '') + '</span>';
+  }
+
   function nextCard(d, total) {
     return '<section class="card" data-card="next"><div class="kicker">Next session</div>' + titleBlock(d, total) +
       '<div class="ex-list">' + d.exercises.map(function (ex) {
-        return '<div><span>' + esc(ex.exercise_name) + '</span><span class="load">' + planLoad(ex, ex.proposed_load_kg) + '</span></div>';
+        return '<div>' + listName(ex) + '<span class="load">' + planLoad(ex, ex.proposed_load_kg) + '</span></div>';
       }).join('') + '</div>' +
       '<button class="btn btn-primary" type="button" data-act="start">Start session</button>' +
       '<button class="btn btn-secondary" type="button" data-act="skip-session">Skip session</button></section>';
@@ -553,7 +575,8 @@
     var skipped = c.status === 'SKIPPED';
     var list = c.exercises.length
       ? '<div class="ex-list">' + c.exercises.map(function (ex) {
-          return '<div><span>' + esc(ex.exercise_name) + '</span><span class="load">' + esc(pastSummary(ex)) + '</span></div>';
+          return '<div>' + listName(ex) + '<span class="load">' + esc(ex.sets.length ? pastSummary(ex) : '') + '</span></div>' +
+            (ex.note ? '<p class="note-line">“' + esc(ex.note) + '”</p>' : '');
         }).join('') + '</div>'
       : '<div class="sub">Session skipped.</div>';
     return '<section class="card" data-card="past" data-status="' + c.status + '"><div class="kicker grey">' + (skipped ? 'Skipped' : 'Done') +
@@ -563,7 +586,7 @@
   function upcomingCard(c, total) {
     return '<section class="card" data-card="upcoming"><div class="kicker grey">Upcoming</div>' + titleBlock(c, total) +
       '<div class="ex-list">' + c.exercises.map(function (ex) {
-        return '<div><span>' + esc(ex.exercise_name) + '</span><span class="load">' + planLoad(ex, ex.proposed_load_kg) + '</span></div>';
+        return '<div>' + listName(ex) + '<span class="load">' + planLoad(ex, ex.proposed_load_kg) + '</span></div>';
       }).join('') + '</div>' +
       '<div class="muted" style="font-size:14px">Planned loads, updated after each session.</div></section>';
   }
@@ -690,6 +713,35 @@
     return '<span class="ex-name"><span class="d">' + esc(ex.exercise_name) + '</span>' + (ex.shared ? '<span class="badge badge-shared">Shared</span>' : '') + '</span>';
   }
 
+  // Note pour Trainer (v4) : une par exercice et par séance, modifiable pendant la séance.
+  function noteOf(ex) { return (S.session.notes || {})[ex.exercise_id] || ''; }
+  function noteBlock(ex) {
+    var id = esc(ex.exercise_id), note = noteOf(ex);
+    if (S.noteEdit === ex.exercise_id) {
+      return '<div class="note-edit"><label class="field-label" for="note-input">Note for Trainer</label>' +
+        '<textarea id="note-input" data-note="' + id + '" maxlength="500" rows="3" placeholder="Note for Trainer (pain, machine, feeling…)">' + esc(S.noteDraft) + '</textarea>' +
+        '<div class="note-actions"><button class="btn-ghost" type="button" data-act="note-cancel">Cancel</button>' +
+        '<button class="note-save" type="button" data-act="note-save" data-ex="' + id + '">Save</button></div></div>';
+    }
+    if (note) {
+      return '<div class="note-view"><p class="note-line">“' + esc(note) + '”</p>' +
+        '<button class="btn-ghost" type="button" data-act="note-edit" data-ex="' + id + '">Edit note</button></div>';
+    }
+    return '<button class="btn-ghost" type="button" style="align-self:flex-start" data-act="note-edit" data-ex="' + id + '">Add note</button>';
+  }
+
+  function saveNote(exId) {
+    var ex = exById(exId); if (!ex) return;
+    var text = (S.noteDraft || '').trim().slice(0, 500);
+    if (text === noteOf(ex)) { S.noteEdit = null; render(); return; }
+    S.session.notes = S.session.notes || {};
+    if (text) S.session.notes[exId] = text; else delete S.session.notes[exId];
+    S.noteEdit = null; S.noteDraft = '';
+    // En file avant l'affichage : la pastille passe tout de suite à « Not synced ».
+    S.queue.push({ type: 'exercise_note', session_uid: S.session.session_uid, exercise_id: exId, exercise_name: ex.exercise_name, note: text, logged_at: nowIso() });
+    saveQueue(); saveSession(); render(); flush();
+  }
+
   function summary(ex) {
     var done = [];
     for (var n = 1; n <= ex.sets; n++) { var e = entry(ex.exercise_id, n); if (e && e.status === 'DONE') done.push(e); }
@@ -707,7 +759,8 @@
     if (!isOpen) {
       if (complete && anyDone) {
         return '<section class="ex done" data-ex="' + id + '"><button class="ex-head" type="button" data-act="open-ex" data-ex="' + id + '">' + nameLine(ex) +
-          '<span style="color:var(--accent)" aria-label="Done">' + check(22) + '</span></button><div class="summary">' + esc(summary(ex)) + '</div></section>';
+          '<span style="color:var(--accent)" aria-label="Done">' + check(22) + '</span></button><div class="summary">' + esc(summary(ex)) + '</div>' +
+          (noteOf(ex) ? '<p class="note-line">“' + esc(noteOf(ex)) + '”</p>' : '') + '</section>';
       }
       return '<section class="ex" data-ex="' + id + '"><button class="ex-head" type="button" data-act="open-ex" data-ex="' + id + '">' +
         '<span style="display:flex;flex-direction:column;gap:2px">' + nameLine(ex) + '<span class="ex-meta">' + esc(repsText(ex)) + ' · ' + rirText(ex) + ' · ' + restText(ex) + '</span></span>' +
@@ -744,6 +797,7 @@
     }
     var hasOpen = false;
     for (var q = 1; q <= ex.sets; q++) if (!entry(ex.exercise_id, q)) hasOpen = true;
+    out += noteBlock(ex);
     if (hasOpen) out += '<button class="btn-ghost" type="button" style="align-self:flex-start" data-act="skip-ex" data-ex="' + id + '">Skip exercise</button>';
     return out + '</section>';
   }
@@ -794,7 +848,9 @@
   });
 
   root.addEventListener('input', function (e) {
-    var t = e.target; var field = t.getAttribute('data-field'); if (!field) return;
+    var t = e.target;
+    if (t.getAttribute('data-note') !== null) { S.noteDraft = t.value; return; }
+    var field = t.getAttribute('data-field'); if (!field) return;
     var k = t.getAttribute('data-key');
     var parts = k.split(':'); var ex = exById(parts[0]);
     var d = draftFor(ex, Number(parts[1])); d = { load: d.load, reps: d.reps };
@@ -828,6 +884,10 @@
       case 'skip-rest': S.timer = null; render(); break;
       case 'dlg-ok': var run = S.dialog && S.dialog.run; S.dialog = null; render(); if (run) run(); break;
       case 'dlg-cancel': S.dialog = null; render(); break;
+      case 'note-edit': S.noteEdit = exId; S.noteDraft = noteOf(exById(exId)); S.expanded = exId; render();
+        var ta = document.getElementById('note-input'); if (ta) { ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); } break;
+      case 'note-cancel': S.noteEdit = null; S.noteDraft = ''; render(); break;
+      case 'note-save': saveNote(exId); break;
       case 'delete-session': deleteSession(el.getAttribute('data-uid'), Number(el.getAttribute('data-seq'))); break;
     }
   });
