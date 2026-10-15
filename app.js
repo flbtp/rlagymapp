@@ -1,11 +1,11 @@
-// GYM_APP — front end v6
+// GYM_APP — front end v7
 // Référence fonctionnelle : PROJECT_SPEC.md. Tous les textes affichés sont en anglais.
 // Toute modification (démarrer, série, fin, saut) est d'abord appliquée localement,
 // mise en file d'attente, puis envoyée au Worker par POST /sync dès que possible.
 (function () {
   'use strict';
 
-  var APP_VERSION = 'v6';
+  var APP_VERSION = 'v7';
   var WORKER = ((window.GYM_CONFIG && window.GYM_CONFIG.workerUrl) || '').replace(/\/+$/, '');
   var REQUEST_TIMEOUT_MS = 10000;
   var RETRY_MS = 15000;
@@ -344,13 +344,17 @@
     var k = ex.exercise_id + ':' + n;
     if (S.drafts[k]) return S.drafts[k];
     var e = entry(ex.exercise_id, n);
-    var load = null, reps = ex.reps_max;
-    if (e && e.status === 'DONE') { load = e.load_kg; reps = e.reps; }
-    else {
-      for (var m = n - 1; m >= 1; m--) { var p = entry(ex.exercise_id, m); if (p && p.status === 'DONE') { load = p.load_kg; break; } }
-      if (load === null) load = ex.proposed_load_kg;
+    if (e && e.status === 'DONE') return { load: fmtNum(e.load_kg), reps: String(e.reps) };
+    // v7 : reprise de la série précédente de l'exercice (charge et répétitions) : saisie en cours,
+    // sinon valeurs validées ; les séries sautées sont ignorées. Série 1 : charge proposée et reps_max.
+    for (var m = n - 1; m >= 1; m--) {
+      var dm = S.drafts[ex.exercise_id + ':' + m];
+      if (dm) return { load: dm.load, reps: dm.reps };
+      var p = entry(ex.exercise_id, m);
+      if (p && p.status === 'DONE') return { load: fmtNum(p.load_kg), reps: String(p.reps) };
     }
-    return { load: load === null || load === undefined ? '' : fmtNum(load), reps: String(reps) };
+    var load = ex.proposed_load_kg;
+    return { load: load === null || load === undefined ? '' : fmtNum(load), reps: String(ex.reps_max) };
   }
   function draftValid(d) { return parseNum(d.load) !== null && parseIntStrict(d.reps) !== null; }
 
@@ -877,7 +881,19 @@
     d[field] = t.value; S.drafts[k] = d; S.active = k;
     var box = t.closest('.set-active'); var btn = box && box.querySelector('[data-act="log"]');
     if (btn) btn.disabled = !draftValid(d);
+    refreshPending(ex);
   });
+
+  // v7 : les séries à venir (pointillés) suivent la saisie en cours sans réafficher l'écran.
+  function refreshPending(ex) {
+    for (var m = 1; m <= ex.sets; m++) {
+      var b = root.querySelector('.set-row.pending[data-key="' + ex.exercise_id + ':' + m + '"]');
+      var v = b && b.querySelector('.v');
+      if (!v) continue;
+      var d = draftFor(ex, m);
+      v.textContent = loadLabel(ex, parseNum(d.load)) + ' × ' + d.reps;
+    }
+  }
 
   root.addEventListener('click', function (e) {
     var el = e.target.closest('[data-act]'); if (!el) return;
