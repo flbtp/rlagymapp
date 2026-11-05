@@ -1,4 +1,4 @@
-/* GYM_APP — styles v6. Ambiance sombre : jamais de fond clair (salle peu éclairée). */
+/* GYM_APP — styles v8. Ambiance sombre : jamais de fond clair (salle peu éclairée). */
 :root {
   --bg: #0F1012;
   --surface: #181A1D;
@@ -25,7 +25,9 @@
 
 *, *::before, *::after { box-sizing: border-box; }
 html { height: 100%; }
-html, body { margin: 0; background: var(--bg); color: var(--text); font-family: var(--body); font-size: 16px; -webkit-tap-highlight-color: transparent; }
+html, body { margin: 0; background: var(--bg); color: var(--text); font-family: var(--body); font-size: 16px; -webkit-tap-highlight-color: transparent; touch-action: manipulation; }
+/* v8 : pas de zoom au double-tap (iOS Safari) sur les boutons ; défilement et pincement conservés. */
+button { touch-action: manipulation; user-select: none; -webkit-user-select: none; }
 /* v5 : aucune hauteur sur body ; la hauteur d'écran est portée par .screen. Pas de débordement horizontal. */
 body { overflow-x: clip; }
 button, input { font: inherit; color: inherit; }
@@ -54,7 +56,8 @@ a { color: var(--accent); }
 .chip-ok { background: var(--ok-bg); color: var(--ok); }
 .chip-warn { background: var(--warn-bg); color: var(--warn); }
 .badge { display: inline-flex; align-items: center; height: 22px; padding: 0 8px; border-radius: 11px; font-size: 12px; font-weight: 600; }
-.badge-shared { background: var(--ok-bg); color: var(--ok); }
+.badge-shared { background: var(--ok-bg); color: var(--ok); } /* v8 : « Shared » et « Side by side » (.badge-side), même couleur */
+.badge-side { white-space: nowrap; }
 .badge-skipped { background: var(--surface-2); color: var(--muted); }
 
 /* Connexion */

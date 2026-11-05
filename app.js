@@ -1,11 +1,11 @@
-// GYM_APP — front end v7
+// GYM_APP — front end v8
 // Référence fonctionnelle : PROJECT_SPEC.md. Tous les textes affichés sont en anglais.
 // Toute modification (démarrer, série, fin, saut) est d'abord appliquée localement,
 // mise en file d'attente, puis envoyée au Worker par POST /sync dès que possible.
 (function () {
   'use strict';
 
-  var APP_VERSION = 'v7';
+  var APP_VERSION = 'v8';
   var WORKER = ((window.GYM_CONFIG && window.GYM_CONFIG.workerUrl) || '').replace(/\/+$/, '');
   var REQUEST_TIMEOUT_MS = 10000;
   var RETRY_MS = 15000;
@@ -570,8 +570,16 @@
       '<div class="sub">Block ' + c.block + ' · ' + esc(c.session_id) + ' · ' + esc(c.session_name) + '</div></div>';
   }
 
+  // v8 : badge selon shared : SHARED → « Shared », SIDE_BY_SIDE → « Side by side », NONE → rien.
+  function sharedBadge(ex) {
+    if (ex.shared === 'SHARED') return '<span class="badge badge-shared">Shared</span>';
+    if (ex.shared === 'SIDE_BY_SIDE') return '<span class="badge badge-shared badge-side">Side by side</span>';
+    return '';
+  }
+
   function listName(ex) {
-    return '<span class="ex-lname">' + esc(ex.exercise_name) + (ex.shared ? ' <span class="badge badge-shared">Shared</span>' : '') + '</span>';
+    var b = sharedBadge(ex);
+    return '<span class="ex-lname">' + esc(ex.exercise_name) + (b ? ' ' + b : '') + '</span>';
   }
 
   function nextCard(d, total) {
@@ -736,7 +744,7 @@
   }
 
   function nameLine(ex) {
-    return '<span class="ex-name"><span class="d">' + esc(ex.exercise_name) + '</span>' + (ex.shared ? '<span class="badge badge-shared">Shared</span>' : '') + '</span>';
+    return '<span class="ex-name"><span class="d">' + esc(ex.exercise_name) + '</span>' + sharedBadge(ex) + '</span>';
   }
 
   // Note pour Trainer (v4) : une par exercice et par séance, modifiable pendant la séance.
